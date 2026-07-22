@@ -62,10 +62,18 @@ const cwd = opt('--cwd') ?? process.cwd();
 const [cmd, roomId, ...rest] = argv;
 const sha = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
 const fmt = (m) => `${m.kind === 'system' ? '· ' : m.kind === 'jina' ? '🌸 ' : ''}${m.nickname}: ${m.text}`;
+// HTTP는 8초 타임아웃 + 친절한 에러 — 죽은 네트워크에서 조용히 매달리지 않는다
+const jfetch = async (path) => {
+  try {
+    return await (await fetch(`${URL}${path}`, { signal: AbortSignal.timeout(8_000) })).json();
+  } catch (e) {
+    die(`서버 연결 실패 (${URL}): ${e.message} — 네트워크/샌드박스 확인, 진단은 jinachat doctor`);
+  }
+};
 
 // ─── rooms / doctor — 소켓 불필요 ──────────────────────────
 if (cmd === 'rooms') {
-  const { rooms } = await (await fetch(`${URL}/api/rooms`)).json();
+  const { rooms } = await jfetch('/api/rooms');
   if (!rooms.length) console.log('(열린 방 없음)');
   for (const r of rooms) console.log(`${r.roomId.padEnd(10)} 👥${r.humans} ${r.isPrivate ? '🔒' : '  '} ${r.title}`);
   process.exit(0);
@@ -79,7 +87,7 @@ if (cmd === 'doctor') {
   console.log(`인증      ${token ? `토큰 (${tokenFile ? `파일 ${tokenFile}` : process.env.JINA_TOKEN ? '환경변수' : '--token'})` : password ? `비밀번호 (${pwFile ? `파일 ${pwFile}` : '환경변수/--pw'})` : '없음 — 공개방만 가능'}`);
   const t0 = Date.now();
   try {
-    const r = await fetch(`${URL}/api/rooms`);
+    const r = await fetch(`${URL}/api/rooms`, { signal: AbortSignal.timeout(8_000) });
     console.log(`서버 응답 ${r.ok ? '✓' : `HTTP ${r.status}`} (${Date.now() - t0}ms)`);
   } catch (e) {
     console.log(`서버 응답 ✗ 연결 실패 — 네트워크/샌드박스 확인 (Codex 샌드박스는 아웃바운드 차단): ${e.message}`);
@@ -90,7 +98,8 @@ if (cmd === 'doctor') {
 if (!cmd || !roomId || !['read', 'post', 'watch', 'token', 'bridge'].includes(cmd)) die(USAGE);
 
 const nick = (cmd === 'post' || cmd === 'watch' || cmd === 'bridge' ? rest[0] : undefined) ?? '손님';
-const text = cmd === 'post' ? rest.slice(1).join(' ') : '';
+// 서버와 같은 변환(trim + 2000자 컷)을 미리 적용 — 안 그러면 긴 메시지가 전송돼 놓고 에코 불일치로 실패 표시된다
+const text = cmd === 'post' ? rest.slice(1).join(' ').trim().slice(0, 2000) : '';
 if (cmd === 'post' && !text) die('post 사용법: jinachat post <방> <닉> <메시지…>');
 if (cmd === 'bridge' && (!rest[0] || !['claude', 'codex'].includes(engine ?? ''))) {
   die('bridge 사용법: jinachat bridge <방> <닉> --engine claude|codex [--session uuid|last|none] [--cwd <세션 폴더>]');
@@ -105,9 +114,10 @@ const bye = (code) => { s.disconnect(); setTimeout(() => process.exit(code), 150
 let joined = false;
 
 // ─── bridge 두뇌 — 부르면 자동으로 답한다 ──────────────────
-const OUT = join(tmpdir(), `jinachat-bridge-${roomId}-${nick}.txt`);
+const OUT = join(tmpdir(), `jinachat-bridge-${sha(`${roomId}:${nick}`)}.txt`); // 닉·방코드에 경로 문자가 와도 안전
 const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const CALL_RE = new RegExp(`^${escRe(nick)}|${escRe(nick)}(야|님|씨|[,!?~:])`);
+// 호명 게이트 — 문장 시작 닉은 경계 필수: 닉 '로드'가 "로드맵…"에 오발동하면 안 된다 (덱스 PR 리뷰 1R)
+const CALL_RE = new RegExp(`^${escRe(nick)}(야|님|씨|[,!?~:\\s]|$)|${escRe(nick)}(야|님|씨)`);
 let busy = false;
 let lastReplyAt = 0;
 const recent = [];
