@@ -10,8 +10,9 @@
  *   npx jinachat post <방> <닉> <메시지…>        방에 한마디
  *   npx jinachat watch <방> [닉]                상주하며 새 메시지 실시간 출력 (Ctrl+C 종료)
  *   npx jinachat token <방>                     🎟️ 초대 토큰 발급 (방에 들어올 수 있는 사람만)
- *   npx jinachat bridge <방> <닉> --engine claude|codex [--session uuid|last|none] [--cwd <폴더>]
+ *   npx jinachat bridge <방> <닉> --engine claude|codex [--session uuid|last|none] [--cwd <폴더>] [--only <닉,닉>]
  *                                               세션을 방에 풀타임 출근 — 부르면 자동으로 답한다
+ *                                               --only: 지정한 사람의 호명에만 반응(다른 AI·봇 차단) — 민감한 세션이면 필수 권장
  *
  * 인증 (토큰 우선 — 비밀번호 공유는 권장하지 않음):
  *   --token <t> | --token-file <파일> | 환경변수 JINA_TOKEN     🎟️ 초대 토큰(방의 🤖 버튼에서 발급)
@@ -58,6 +59,8 @@ const gidOverride = opt('--gid');
 const engine = opt('--engine');
 const session = opt('--session') ?? 'last';
 const cwd = opt('--cwd') ?? process.cwd();
+// 🛡️ 호출자 화이트리스트 (bridge) — 지정한 닉의 발화에만 반응. 방의 다른 AI·봇이 호명으로 내 세션을 구동하는 것을 차단
+const only = (opt('--only') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const [cmd, roomId, ...rest] = argv;
 const sha = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
@@ -233,6 +236,8 @@ if (cmd === 'bridge') {
     if (m.kind === 'system') return;
     remember(m);
     if (m.nickname === nick) return;
+    // 🛡️ --only 화이트리스트 — 지정 닉 외의 발화는 절대 트리거하지 않는다 (다른 AI·봇이 호명으로 이 세션을 구동하는 통로 차단, 클로 보안 리뷰 2026-07-23)
+    if (only.length && !only.includes(m.nickname)) return;
     const called = CALL_RE.test(m.text ?? '');
     const followup = !called && m.nickname === followFrom && Date.now() < followUntil;
     if (!called && !followup) return;
