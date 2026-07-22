@@ -23,6 +23,7 @@
  */
 import { readFileSync, unlinkSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -64,7 +65,31 @@ const only = (opt('--only') ?? '').split(',').map((s) => s.trim()).filter(Boolea
 
 const [cmd, roomId, ...rest] = argv;
 const sha = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
-const fmt = (m) => `${m.kind === 'system' ? '· ' : m.kind === 'jina' ? '🌸 ' : ''}${m.nickname}: ${m.text}`;
+// 🔐 시크릿방 E2E — 웹과 동일 파라미터: PBKDF2-SHA256 150k, salt jinachat:auth|enc:<방>, AES-256-GCM, enc1:iv:ct‖tag
+const kdf = (pw, salt) => pbkdf2Sync(pw, salt, 150000, 32, 'sha256');
+const secretAuthHex = (pw, room) => kdf(pw, `jinachat:auth:${room}`).toString('hex');
+const secretEncKey = (pw, room) => kdf(pw, `jinachat:enc:${room}`);
+const isEnc = (t) => typeof t === 'string' && t.startsWith('enc1:');
+const encText = (key, text) => {
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([c.update(text, 'utf8'), c.final(), c.getAuthTag()]);
+  return `enc1:${iv.toString('base64')}:${ct.toString('base64')}`;
+};
+const decText = (key, payload) => {
+  try {
+    const [, ivB, ctB] = payload.split(':');
+    const data = Buffer.from(ctB, 'base64');
+    const d = createDecipheriv('aes-256-gcm', key, Buffer.from(ivB, 'base64'));
+    d.setAuthTag(data.subarray(data.length - 16));
+    return Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+};
+let encKey = null; // 시크릿방이면 접속 전에 채워진다
+const maybeDec = (t) => (encKey && isEnc(t) ? (decText(encKey, t) ?? '🔐 (해독 실패)') : t);
+const fmt = (m) => `${m.kind === 'system' ? '· ' : m.kind === 'jina' ? '🌸 ' : ''}${m.nickname}: ${maybeDec(m.text)}`;
 // HTTP는 8초 타임아웃 + 친절한 에러 — 죽은 네트워크에서 조용히 매달리지 않는다
 const jfetch = async (path) => {
   try {
@@ -109,7 +134,15 @@ if (cmd === 'bridge' && (!rest[0] || !['claude', 'codex'].includes(engine ?? '')
 }
 
 const gid = gidOverride ?? `g-cli-${sha(cmd === 'bridge' ? `${roomId}:${nick}` : nick)}`;
-const joinPayload = { roomId, guestId: gid, nickname: nick, password, agent: true, ...(token ? { agentToken: token } : {}) };
+// 🔐 시크릿방 — 원문 비번은 서버에 안 보낸다: 인증키로 변환 + 암호키는 이 프로세스 메모리에만
+const roomInfo = await jfetch(`/api/rooms/${roomId}`);
+let joinPw = password;
+if (roomInfo?.secret) {
+  if (!password) die('🔐 시크릿방은 비밀번호가 필요해요 — --pw-file <파일> 권장 (토큰만으론 입장돼도 대화를 해독할 수 없어요)');
+  joinPw = secretAuthHex(password, roomId);
+  encKey = secretEncKey(password, roomId);
+}
+const joinPayload = { roomId, guestId: gid, nickname: nick, password: joinPw, agent: true, ...(token ? { agentToken: token } : {}) };
 
 const s = io(URL, { transports: ['websocket'] });
 const timeout = setTimeout(() => die('시간초과 — 서버 응답 없음'), 12_000);
@@ -130,7 +163,7 @@ let followFrom = null;
 let followUntil = 0;
 const FOLLOWUP_MS = 90_000;
 const recent = [];
-const remember = (m) => { recent.push(`${m.nickname}: ${m.text}`); if (recent.length > 30) recent.shift(); };
+const remember = (m) => { recent.push(`${m.nickname}: ${maybeDec(m.text)}`); if (recent.length > 30) recent.shift(); };
 const brainPrompt = () => `당신은 "${nick}" — 지나챗 방(${roomId})에 연결된 AI 세션 멤버입니다. 방 대화 마지막에서 당신이 호출되었습니다.
 
 규칙:
@@ -167,7 +200,7 @@ function askBrain(from) {
     else reply = (stdout ?? '').trim();
     if (!reply) { console.log(`[${new Date().toISOString()}] 빈 응답${e ? ` (${e.message.slice(0, 80)})` : ''} — 발화 생략`); busy = false; return; }
     if (reply.length > 1500) reply = reply.slice(0, 1500) + ' …(길어서 줄임)';
-    s.emit('chat:msg', { text: reply });
+    s.emit('chat:msg', { text: encKey ? encText(encKey, reply) : reply });
     lastReplyAt = Date.now();
     followUntil = Date.now() + FOLLOWUP_MS; // 답했으니 후속창 개방 — 호출자는 이름 없이 이어서 말해도 된다
     busy = false;
@@ -194,16 +227,17 @@ s.on('connect', () => {
       return;
     }
     if (cmd === 'post') {
-      // 자기 에코가 돌아와야 진짜 저장 — 낙관 대기는 유실을 못 본다
+      // 자기 에코가 돌아와야 진짜 저장 — 낙관 대기는 유실을 못 본다 (시크릿방은 암호문끼리 비교)
+      const wire = encKey ? encText(encKey, text) : text;
       const guard = setTimeout(() => { console.error('⚠ 전송 확인 실패 — 5초 내 서버 에코 없음'); bye(1); }, 5_000);
       s.on('chat:msg', (m) => {
-        if (m.nickname === nick && m.text === text) {
+        if (m.nickname === nick && m.text === wire) {
           clearTimeout(guard);
-          console.log(`✓ 전송: ${nick}: ${text}`);
+          console.log(`✓ 전송: ${nick}: ${text}${encKey ? ' 🔐' : ''}`);
           bye(0);
         }
       });
-      s.emit('chat:msg', { text });
+      s.emit('chat:msg', { text: wire });
       return;
     }
     if (cmd === 'token') {
@@ -238,7 +272,7 @@ if (cmd === 'bridge') {
     if (m.nickname === nick) return;
     // 🛡️ --only 화이트리스트 — 지정 닉 외의 발화는 절대 트리거하지 않는다 (다른 AI·봇이 호명으로 이 세션을 구동하는 통로 차단, 클로 보안 리뷰 2026-07-23)
     if (only.length && !only.includes(m.nickname)) return;
-    const called = CALL_RE.test(m.text ?? '');
+    const called = CALL_RE.test(maybeDec(m.text ?? '') ?? '');
     const followup = !called && m.nickname === followFrom && Date.now() < followUntil;
     if (!called && !followup) return;
     if (busy) return;
