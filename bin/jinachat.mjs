@@ -31,7 +31,7 @@ import { io } from 'socket.io-client';
 
 const URL = process.env.JINA_URL ?? 'https://chat.jina.world';
 const USAGE =
-  '사용법: jinachat rooms | doctor [닉] | read <방> [n] | post <방> <닉> <메시지…> | watch <방> [닉] | token <방> | bridge <방> <닉> --engine claude|codex\n인증: --token <t> · --token-file <f> · JINA_TOKEN (권장) / --pw-file <f> · JINA_ROOM_PW';
+  '사용법: jinachat rooms | doctor [닉] | read <방> [n] | post <방> <닉> <메시지…> | watch <방> [닉] | token <방> | bridge <방> <닉> --engine claude|codex | ps | stop <방> [닉]\n인증: --token <t> · --token-file <f> · JINA_TOKEN (권장) / --pw-file <f> · JINA_ROOM_PW';
 
 function die(msg) {
   console.error(msg);
@@ -120,6 +120,34 @@ if (cmd === 'doctor') {
   } catch (e) {
     console.log(`서버 응답 ✗ 연결 실패 — 네트워크/샌드박스 확인 (Codex 샌드박스는 아웃바운드 차단): ${e.message}`);
   }
+  process.exit(0);
+}
+
+// ─── ps / stop — 이 컴퓨터의 상주 브릿지 관리 (프로세스 스프롤 정리, 지기 2026-07-23) ───
+if (cmd === 'ps' || cmd === 'stop') {
+  const { execSync } = await import('node:child_process');
+  const lines = execSync('ps -eo pid=,etime=,command=', { encoding: 'utf8' }).split('\n');
+  const rows = [];
+  for (const l of lines) {
+    const m = l.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
+    if (!m) continue;
+    const [, pid, etime, cmdline] = m;
+    if (!/jinachat(\.mjs)?\s+bridge\s|bin\/jinachat\s+bridge\s/.test(cmdline)) continue;
+    const am = cmdline.match(/bridge\s+(\S+)\s+(\S+)[\s\S]*?--engine\s+(\S+)/);
+    if (!am) continue;
+    rows.push({ pid: Number(pid), etime, room: am[1], nick: am[2], engine: am[3], wrapper: /npm exec/.test(cmdline) });
+  }
+  if (cmd === 'ps') {
+    const seen = new Map();
+    for (const r of rows) { const k = `${r.room}:${r.nick}`; if (!seen.has(k) || seen.get(k).wrapper) seen.set(k, r); } // 래퍼 말고 실프로세스 우선
+    if (!seen.size) console.log('(이 컴퓨터에 상주 브릿지 없음)');
+    for (const r of seen.values()) console.log(`${r.room.padEnd(10)} ${r.nick.padEnd(6)} ${r.engine.padEnd(7)} pid ${String(r.pid).padEnd(6)} 가동 ${r.etime}`);
+    process.exit(0);
+  }
+  if (!roomId) die('stop 사용법: jinachat stop <방> [닉] — 닉 생략 시 그 방의 브릿지 전부');
+  const targets = rows.filter((r) => r.room === roomId && (!rest[0] || r.nick === rest[0]));
+  if (!targets.length) die(`종료할 브릿지가 없어요: ${roomId}${rest[0] ? ' ' + rest[0] : ''}`);
+  for (const r of targets) { try { process.kill(r.pid); console.log(`✋ 종료: ${r.room} ${r.nick} (pid ${r.pid})`); } catch { /* 이미 죽음 */ } }
   process.exit(0);
 }
 
