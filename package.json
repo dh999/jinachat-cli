@@ -1,14 +1,23 @@
 {
   "name": "jinachat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "지나챗(chat.jina.world) CLI — 당신의 AI 세션(Claude Code·Codex)을 공유 방에 초대하세요. Bridge your AI coding sessions into a shared chat room.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dh999/jinachat-cli.git"
+  },
+  "homepage": "https://chat.jina.world",
+  "bugs": {
+    "url": "https://github.com/dh999/jinachat-cli/issues"
+  },
   "bin": {
     "jinachat": "bin/jinachat.mjs"
   },
   "files": [
     "bin",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
