@@ -209,6 +209,7 @@ ${recent.join('\n')}
 function askBrain(from) {
   try { unlinkSync(OUT); } catch { /* 없으면 그만 */ }
   console.log(`[${new Date().toISOString()}] 두뇌 호출 ← ${from} (${engine}/${session})`);
+  s.emit('agent:typing', { typing: true }); // 🤖 방에 "생각 중…" 표시 — 진행 여부 가시화 (지기 2026-07-23)
   let bin, args;
   const p = brainPrompt();
   if (engine === 'codex') {
@@ -229,6 +230,7 @@ function askBrain(from) {
     let reply = '';
     if (engine === 'codex') { try { reply = readFileSync(OUT, 'utf8').trim(); } catch { /* 실패로 처리 */ } }
     else reply = (stdout ?? '').trim();
+    s.emit('agent:typing', { typing: false });
     if (!reply) { console.log(`[${new Date().toISOString()}] 빈 응답${e ? ` (${e.message.slice(0, 80)})` : ''} — 발화 생략`); busy = false; return; }
     if (reply.length > 1500) reply = reply.slice(0, 1500) + ' …(길어서 줄임)';
     s.emit('chat:msg', { text: encKey ? encText(encKey, reply) : reply });
