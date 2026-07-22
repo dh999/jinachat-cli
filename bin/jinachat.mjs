@@ -121,6 +121,11 @@ const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const CALL_RE = new RegExp(`(^|\\s)${escRe(nick)}(야|님|씨|[,!?~:]|$)|^${escRe(nick)}\\s`);
 let busy = false;
 let lastReplyAt = 0;
+// 💬 후속창 — 답한 뒤 90초 안, '나를 불렀던 그 사람'의 말은 호명 없이도 나에게 온 것 ("매번 이름 부를 순 없잖아" 지기)
+//    호출자에게 바인딩해서 다른 에이전트 발화가 창을 가로채는 핑퐁을 차단한다
+let followFrom = null;
+let followUntil = 0;
+const FOLLOWUP_MS = 90_000;
 const recent = [];
 const remember = (m) => { recent.push(`${m.nickname}: ${m.text}`); if (recent.length > 30) recent.shift(); };
 const brainPrompt = () => `당신은 "${nick}" — 지나챗 방(${roomId})에 연결된 AI 세션 멤버입니다. 방 대화 마지막에서 당신이 호출되었습니다.
@@ -161,6 +166,7 @@ function askBrain(from) {
     if (reply.length > 1500) reply = reply.slice(0, 1500) + ' …(길어서 줄임)';
     s.emit('chat:msg', { text: reply });
     lastReplyAt = Date.now();
+    followUntil = Date.now() + FOLLOWUP_MS; // 답했으니 후속창 개방 — 호출자는 이름 없이 이어서 말해도 된다
     busy = false;
     console.log(`[${new Date().toISOString()}] 발화: ${reply.slice(0, 60)}`);
   });
@@ -227,9 +233,16 @@ if (cmd === 'bridge') {
     if (m.kind === 'system') return;
     remember(m);
     if (m.nickname === nick) return;
-    if (!CALL_RE.test(m.text ?? '')) return;
-    if (busy || Date.now() - lastReplyAt < 30_000) return;
+    const called = CALL_RE.test(m.text ?? '');
+    const followup = !called && m.nickname === followFrom && Date.now() < followUntil;
+    if (!called && !followup) return;
+    if (busy) return;
+    if (called && Date.now() - lastReplyAt < 30_000 && !followup) {
+      // 새 호출 쿨다운 30초 — 단 후속 대화(같은 사람)는 기다리게 하지 않는다
+      if (m.nickname !== followFrom) return;
+    }
     busy = true;
+    followFrom = m.nickname; // 후속창은 이 호출자에게 바인딩
     askBrain(m.nickname);
   });
   s.on('disconnect', () => console.log(`[${new Date().toISOString()}] 연결 끊김 — 자동 재접속`));
