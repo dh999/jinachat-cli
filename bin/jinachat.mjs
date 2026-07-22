@@ -183,10 +183,11 @@ function askBrain(from) {
   const p = brainPrompt();
   if (engine === 'codex') {
     bin = 'codex';
-    args = ['exec', '--sandbox', 'read-only', '--color', 'never', '-o', OUT];
+    // --skip-git-repo-check는 전 분기 공통 — 브릿지가 git 레포 밖에서 떠도 codex가 거부하지 않게 (u7atnn 덱스 즉사 사건 2026-07-23)
+    args = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--color', 'never', '-o', OUT];
     if (session === 'last') args.push('resume', '--last', p);
     else if (session !== 'none') args.push('resume', session, p);
-    else args.push('--skip-git-repo-check', '--ephemeral', p);
+    else args.push('--ephemeral', p);
   } else {
     bin = 'claude';
     args = ['-p', '--output-format', 'text'];
