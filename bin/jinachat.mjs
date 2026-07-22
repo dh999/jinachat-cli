@@ -116,8 +116,9 @@ let joined = false;
 // ─── bridge 두뇌 — 부르면 자동으로 답한다 ──────────────────
 const OUT = join(tmpdir(), `jinachat-bridge-${sha(`${roomId}:${nick}`)}.txt`); // 닉·방코드에 경로 문자가 와도 안전
 const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// 호명 게이트 — 문장 시작 닉은 경계 필수: 닉 '로드'가 "로드맵…"에 오발동하면 안 된다 (덱스 PR 리뷰 1R)
-const CALL_RE = new RegExp(`^${escRe(nick)}(야|님|씨|[,!?~:\\s]|$)|${escRe(nick)}(야|님|씨)`);
+// 호명 게이트 (덱스 PR 리뷰 1R·2R) — 양쪽 경계 필수: '로드맵'(1R)도, 문장 중간 '…덱스, 의견줘'(2R)도 정확히.
+// 단 공백맺음 단독 언급("그 덱스 말이야")은 3인칭이라 안 깨운다 — 과발동 절충.
+const CALL_RE = new RegExp(`(^|\\s)${escRe(nick)}(야|님|씨|[,!?~:]|$)|^${escRe(nick)}\\s`);
 let busy = false;
 let lastReplyAt = 0;
 const recent = [];
