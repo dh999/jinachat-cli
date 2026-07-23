@@ -314,16 +314,18 @@ if (cmd === 'bridge') {
     if (m.nickname === nick) return;
     // 🛡️ --only 화이트리스트 — 지정 닉 외의 발화는 절대 트리거하지 않는다 (다른 AI·봇이 호명으로 이 세션을 구동하는 통로 차단, 클로 보안 리뷰 2026-07-23)
     if (only.length && !only.includes(m.nickname)) return;
+    // 🤖 봇→봇 핑퐁 차단 (클로·덱스 자가진단 2026-07-23): 다른 에이전트 발화는 후속창을 절대 안 열고,
+    //    직접 호명이어도 강한 쿨다운(60초)을 둔다. 사람 발화만 자유 반응. "서로 마무리 인사" 무한루프 종결.
+    const fromBot = Boolean(m.fromAgent);
     const called = CALL_RE.test(maybeDec(m.text ?? '') ?? '');
-    const followup = !called && m.nickname === followFrom && Date.now() < followUntil;
+    const followup = !called && !fromBot && m.nickname === followFrom && Date.now() < followUntil;
     if (!called && !followup) return;
     if (busy) return;
-    if (called && Date.now() - lastReplyAt < 30_000 && !followup) {
-      // 새 호출 쿨다운 30초 — 단 후속 대화(같은 사람)는 기다리게 하지 않는다
-      if (m.nickname !== followFrom) return;
-    }
+    const cool = fromBot ? 60_000 : 30_000;
+    if (called && !followup && Date.now() - lastReplyAt < cool && m.nickname !== followFrom) return;
+    if (fromBot && called && Date.now() - lastReplyAt < cool) return; // 봇 호명은 쿨다운 강제 (핑퐁 감쇠)
     busy = true;
-    followFrom = m.nickname; // 후속창은 이 호출자에게 바인딩
+    if (!fromBot) followFrom = m.nickname; // 후속창은 사람 호출자에게만 바인딩
     askBrain(m.nickname);
   });
   s.on('disconnect', () => console.log(`[${new Date().toISOString()}] 연결 끊김 — 자동 재접속`));
