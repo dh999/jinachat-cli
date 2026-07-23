@@ -91,6 +91,14 @@ const decText = (key, payload) => {
 };
 let encKey = null; // 시크릿방이면 접속 전에 채워진다
 const maybeDec = (t) => (encKey && isEnc(t) ? (decText(encKey, t) ?? '🔐 (해독 실패)') : t);
+// 바이트 상한으로 안전하게 자르기 — UTF-8 경계 보존(멀티바이트 문자 중간에서 안 끊김)
+const clampBytes = (str, maxBytes) => {
+  const buf = Buffer.from(str, 'utf8');
+  if (buf.length <= maxBytes) return str;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--; // 연속바이트면 뒤로
+  return buf.subarray(0, end).toString('utf8') + ' …(길어서 줄임)';
+};
 const fmt = (m) => `${m.kind === 'system' ? '· ' : m.kind === 'jina' ? '🌸 ' : ''}${m.nickname}: ${maybeDec(m.text)}`;
 // HTTP는 8초 타임아웃 + 친절한 에러 — 죽은 네트워크에서 조용히 매달리지 않는다
 const jfetch = async (path) => {
@@ -232,7 +240,8 @@ function askBrain(from) {
     else reply = (stdout ?? '').trim();
     s.emit('agent:typing', { typing: false });
     if (!reply) { console.log(`[${new Date().toISOString()}] 빈 응답${e ? ` (${e.message.slice(0, 80)})` : ''} — 발화 생략`); busy = false; return; }
-    if (reply.length > 1500) reply = reply.slice(0, 1500) + ' …(길어서 줄임)';
+    // 원문을 바이트 기준으로 제한 — 암호화 후 base64가 서버 한도(16k)에 들도록. 한글도 안전하게 잘림 (클로 진단 반영 2026-07-23)
+    reply = clampBytes(reply, 30000); // 리뷰 등 긴 답변 허용 — 암호화 후 base64도 서버 40k 한도 내
     s.emit('chat:msg', { text: encKey ? encText(encKey, reply) : reply });
     lastReplyAt = Date.now();
     followUntil = Date.now() + FOLLOWUP_MS; // 답했으니 후속창 개방 — 호출자는 이름 없이 이어서 말해도 된다
